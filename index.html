@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>スペースマウス</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #000;
+            color: white;
+            font-family: 'MS Gothic', 'Osaka-mono', monospace;
+        }
+        #game-container {
+            position: relative;
+            width: 800px;
+            height: 600px;
+            background-color: #000;
+            border: 2px solid #555;
+            display: flex;
+        }
+        canvas {
+            background-color: #000;
+        }
+        #ui-panel {
+            width: 300px;
+            padding: 20px;
+            box-sizing: border-box;
+            font-size: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        #ui-panel h2 {
+            margin: 0;
+            font-size: 32px;
+            color: #00AAAA;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="ui-panel">
+            <h2>SPACE MOUSE</h2>
+            <p>SCORE: <span id="score">0</span></p>
+            <p>LEVEL: <span id="level">1</span></p>
+        </div>
+    </div>
+
+    <script>
+        // --- 初期設定 ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const levelEl = document.getElementById('level');
+
+        // --- ゲーム定数 ---
+        const GRID_COLS = 25; // ビルの幅
+        const GRID_ROWS_ON_SCREEN = 25; // 画面に表示される行数
+        const TOTAL_GRID_ROWS = 200; // ステージ全体の高さ
+        const CELL_WIDTH = (800 - 300) / GRID_COLS; // UIパネルを除いた幅で計算
+        const CELL_HEIGHT = 600 / GRID_ROWS_ON_SCREEN;
+
+        canvas.width = CELL_WIDTH * GRID_COLS;
+        canvas.height = CELL_HEIGHT * GRID_ROWS_ON_SCREEN;
+
+        const COLORS = {
+            BG: '#000000',
+            WALL: '#00AA00',   // ビルを緑色に統一
+            PLAYER: '#55FFFF', // プレイヤーを水色に変更
+            MOUSE: '#FF55FF',
+        };
+
+        const TILE_TYPE = {
+            EMPTY: 0,
+            WALL: 1,
+            HOLE: 2,
+            SIDE_WALL: 3,
+        };
+        
+        const PLAYER_SCREEN_Y = 18;
+
+        // --- ゲーム変数 ---
+        let grid = [];
+        let player;
+        let mice = [];
+        let score = 0;
+        let level = 1;
+        let gameFrame = 0;
+        let gameOver = false;
+        let scrollY = 0;
+
+        const keys = {
+            ArrowUp: false,
+            ArrowLeft: false,
+            ArrowRight: false,
+        };
+
+        let lastTime = 0;
+        const FPS = 60;
+        const frameInterval = 1000 / FPS;
+
+        // --- クラス定義 ---
+        class Player {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.width = CELL_WIDTH * 0.8;
+                this.height = CELL_HEIGHT * 0.8;
+                this.moveCooldown = 0;
+            }
+
+            draw() {
+                ctx.fillStyle = COLORS.PLAYER;
+                const drawX = this.x * CELL_WIDTH + (CELL_WIDTH - this.width) / 2;
+                const drawY = PLAYER_SCREEN_Y * CELL_HEIGHT + (CELL_HEIGHT - this.height) / 2;
+                ctx.fillRect(drawX, drawY, this.width, this.height);
+            }
+
+            move(dx, dy) {
+                if (this.moveCooldown > 0) return;
+                if (dy > 0) return;
+
+                const nextX = this.x + dx;
+                const nextY = this.y + dy;
+                
+                if (nextX < 0 || nextX >= GRID_COLS || nextY < 0) return;
+
+                const targetTile = grid[nextY][nextX];
+                if (targetTile === TILE_TYPE.WALL || targetTile === TILE_TYPE.SIDE_WALL) {
+                    return;
+                }
+
+                this.x = nextX;
+                this.y = nextY;
+
+                const scrollThreshold = scrollY + (PLAYER_SCREEN_Y * CELL_HEIGHT);
+                if (this.y * CELL_HEIGHT < scrollThreshold) {
+                    scrollY -= CELL_HEIGHT;
+                }
+                
+                this.moveCooldown = 4;
+            }
+
+            update() {
+                if (this.moveCooldown > 0) {
+                    this.moveCooldown--;
+                }
+                if (this.y === 1) {
+                    nextLevel();
+                }
+            }
+        }
+
+        class Mouse {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.width = CELL_WIDTH * 0.9;
+                this.height = CELL_HEIGHT * 0.9;
+                this.dx = Math.random() < 0.5 ? 1 : -1;
+                this.dy = 0;
+                this.moveCooldown = 0;
+                this.speed = Math.max(2, 8 - level);
+            }
+
+            draw() {
+                const drawY = this.y * CELL_HEIGHT - scrollY;
+                if (drawY > -CELL_HEIGHT && drawY < canvas.height) {
+                    ctx.fillStyle = COLORS.MOUSE;
+                    const drawX = this.x * CELL_WIDTH + (CELL_WIDTH - this.width) / 2;
+                    ctx.fillRect(drawX, drawY + (CELL_HEIGHT - this.height) / 2, this.width, this.height);
+                }
+            }
+            
+            update() {
+                this.moveCooldown++;
+                if (this.moveCooldown < this.speed) return;
+                this.moveCooldown = 0;
+
+                this.dy = 0;
+
+                // ★アルゴリズム修正
+                // 現在地が床フロア（偶数行）の場合、必ず下に移動する
+                if (this.y % 2 === 0) {
+                    this.dy = 1;
+                } 
+                // 現在地が通路フロア（奇数行）の場合
+                else {
+                    const floorBelowY = this.y + 1;
+                    // 真下の床に穴があれば、下に移動を開始
+                    if (floorBelowY < TOTAL_GRID_ROWS && grid[floorBelowY][this.x] === TILE_TYPE.HOLE) {
+                        this.dy = 1; 
+                        this.dx = 0; // 落下中は水平移動を停止
+                    }
+                }
+                
+                // 落下しない場合、水平移動する
+                if (this.dy === 0) {
+                    // 落下直後などで水平方向の動きがない場合、新しく左右の方向を決める
+                    if (this.dx === 0) {
+                        this.dx = Math.random() < 0.5 ? 1 : -1;
+                    }
+                    
+                    const nextX = this.x + this.dx;
+                    // 左右の壁に当たったら反転
+                    if (nextX <= 0 || nextX >= GRID_COLS - 1) {
+                        this.dx *= -1;
+                    }
+                }
+                
+                // 座標を更新
+                this.x += this.dx;
+                this.y += this.dy;
+            }
+        }
+
+        // --- ゲームロジック ---
+        function generateBuilding() {
+            grid = [];
+            for (let y = 0; y < TOTAL_GRID_ROWS; y++) {
+                grid[y] = [];
+                for (let x = 0; x < GRID_COLS; x++) {
+                    if (x === 0 || x === GRID_COLS - 1) {
+                        grid[y][x] = TILE_TYPE.SIDE_WALL;
+                    } else if (y % 2 !== 0) { // 奇数行：通路
+                        grid[y][x] = TILE_TYPE.EMPTY;
+                    } else { // 偶数行：床
+                        grid[y][x] = TILE_TYPE.WALL;
+                    }
+                }
+                if (y % 2 === 0 && y > 0) {
+                    const holeCount = 1 + Math.floor(Math.random() * 4);
+                    for (let i = 0; i < holeCount; i++) {
+                        const holeX = 1 + Math.floor(Math.random() * (GRID_COLS - 2));
+                        grid[y][holeX] = TILE_TYPE.HOLE;
+                    }
+                }
+            }
+        }
+
+        function createPlayer() {
+            // ★プレイヤーの開始位置を壁に埋まらないように通路フロアに修正
+            const startY = TOTAL_GRID_ROWS - 3; // 197行目（通路）からスタート
+            player = new Player(Math.floor(GRID_COLS / 2), startY);
+            scrollY = player.y * CELL_HEIGHT - PLAYER_SCREEN_Y * CELL_HEIGHT;
+        }
+
+        function spawnMouse() {
+             const spawnChance = 0.01 + level * 0.005;
+             if (Math.random() < spawnChance && mice.length < (level * 2 + 5)) {
+                const topRow = Math.max(0, Math.floor(scrollY / CELL_HEIGHT));
+                let spawnY = topRow;
+                if(spawnY % 2 === 0) {
+                    spawnY++;
+                }
+                if (spawnY >= TOTAL_GRID_ROWS) return;
+
+                let spawnX;
+                let attempts = 0;
+                do {
+                    spawnX = 1 + Math.floor(Math.random() * (GRID_COLS - 2));
+                    attempts++;
+                } while (grid[spawnY][spawnX] !== TILE_TYPE.EMPTY && attempts < 20);
+
+                if (attempts < 20) {
+                    mice.push(new Mouse(spawnX, spawnY));
+                }
+            }
+        }
+        
+        function handleInput() {
+            if (gameOver) return;
+            if (keys.ArrowUp) {
+                player.move(0, -1);
+            }
+            if (keys.ArrowLeft) {
+                player.move(-1, 0);
+            }
+            if (keys.ArrowRight) {
+                player.move(1, 0);
+            }
+        }
+
+
+        function update() {
+            if (gameOver) return;
+            
+            handleInput();
+            player.update();
+            
+            spawnMouse();
+            mice.forEach((mouse, index) => {
+                mouse.update();
+                const screenY = mouse.y * CELL_HEIGHT - scrollY;
+                if (screenY > canvas.height) {
+                    mice.splice(index, 1);
+                    score += 10;
+                }
+            });
+            checkCollisions();
+            updateUI();
+        }
+
+        function checkCollisions() {
+            mice.forEach(mouse => {
+                // プレイヤーの論理座標とマウスの論理座標で衝突判定
+                if (mouse.x === player.x && mouse.y === player.y) {
+                    gameOver = true;
+                }
+            });
+        }
+
+        function updateUI() {
+            scoreEl.textContent = score;
+            levelEl.textContent = level;
+        }
+
+        function nextLevel() {
+            level++;
+            score += 100 * (level - 1);
+            mice = [];
+            generateBuilding();
+            createPlayer();
+        }
+
+        // --- 描画ロジック ---
+        function drawBuilding() {
+            const startRow = Math.floor(scrollY / CELL_HEIGHT);
+            const endRow = Math.min(TOTAL_GRID_ROWS - 1, startRow + GRID_ROWS_ON_SCREEN + 1);
+            
+            ctx.fillStyle = COLORS.WALL;
+
+            for (let y = startRow; y <= endRow; y++) {
+                const drawY = y * CELL_HEIGHT - scrollY;
+                for (let x = 0; x < GRID_COLS; x++) {
+                    if (grid[y][x] === TILE_TYPE.WALL || grid[y][x] === TILE_TYPE.SIDE_WALL) {
+                        ctx.fillRect(x * CELL_WIDTH, drawY, CELL_WIDTH, CELL_HEIGHT);
+                    }
+                }
+            }
+        }
+
+        function drawGameOver() {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'red';
+            ctx.font = '50px "MS Gothic", "Osaka-mono", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 20);
+            ctx.fillStyle = 'white';
+            ctx.font = '20px "MS Gothic", "Osaka-mono", monospace';
+            ctx.fillText('Press F5 to Restart', canvas.width / 2, canvas.height / 2 + 30);
+        }
+
+        function draw() {
+            ctx.fillStyle = COLORS.BG;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            drawBuilding();
+            mice.forEach(mouse => mouse.draw());
+            player.draw();
+            if (gameOver) {
+                drawGameOver();
+            }
+        }
+
+        // --- イベントリスナー ---
+        window.addEventListener('keydown', (e) => {
+            if (keys.hasOwnProperty(e.key)) {
+                e.preventDefault();
+                keys[e.key] = true;
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.key)) {
+                e.preventDefault();
+                keys[e.key] = false;
+            }
+        });
+
+
+        // --- ゲームループ ---
+        function gameLoop(currentTime) {
+            requestAnimationFrame(gameLoop);
+            const deltaTime = currentTime - lastTime;
+            if (deltaTime < frameInterval) return;
+            lastTime = currentTime - (deltaTime % frameInterval);
+            gameFrame++;
+            update();
+            draw();
+        }
+
+        // --- ゲーム開始 ---
+        function init() {
+            generateBuilding();
+            createPlayer();
+            gameLoop(0);
+        }
+
+        init();
+    </script>
+</body>
+</html>
