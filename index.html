@@ -184,40 +184,35 @@
                 if (this.moveCooldown < this.speed) return;
                 this.moveCooldown = 0;
 
-                this.dy = 0;
+                let isFalling = false;
 
-                // ★アルゴリズム修正
-                // 現在地が床フロア（偶数行）の場合、必ず下に移動する
+                // --- ★アルゴリズム修正 ---
+                // 1. 落下判定
+                // 現在地が床フロア（偶数行）なら、必ず下に移動する
                 if (this.y % 2 === 0) {
-                    this.dy = 1;
+                    isFalling = true;
                 } 
-                // 現在地が通路フロア（奇数行）の場合
+                // 現在地が通路フロア（奇数行）なら、真下をチェック
                 else {
                     const floorBelowY = this.y + 1;
-                    // 真下の床に穴があれば、下に移動を開始
                     if (floorBelowY < TOTAL_GRID_ROWS && grid[floorBelowY][this.x] === TILE_TYPE.HOLE) {
-                        this.dy = 1; 
-                        this.dx = 0; // 落下中は水平移動を停止
+                        isFalling = true;
                     }
                 }
                 
-                // 落下しない場合、水平移動する
-                if (this.dy === 0) {
-                    // 落下直後などで水平方向の動きがない場合、新しく左右の方向を決める
-                    if (this.dx === 0) {
-                        this.dx = Math.random() < 0.5 ? 1 : -1;
-                    }
-                    
+                // 2. 移動実行
+                if (isFalling) {
+                    // 落下中は垂直移動のみ
+                    this.y++;
+                } else {
+                    // 落下していない場合は水平移動
+                    // 左右の壁にぶつかったら方向転換
                     const nextX = this.x + this.dx;
-                    // 左右の壁に当たったら反転
                     if (nextX <= 0 || nextX >= GRID_COLS - 1) {
                         this.dx *= -1;
                     }
+                    this.x += this.dx;
                 }
-                
-                // 座標を更新
-                this.x += this.dx;
-                this.y += this.dy;
             }
         }
 
@@ -246,8 +241,7 @@
         }
 
         function createPlayer() {
-            // ★プレイヤーの開始位置を壁に埋まらないように通路フロアに修正
-            const startY = TOTAL_GRID_ROWS - 3; // 197行目（通路）からスタート
+            const startY = TOTAL_GRID_ROWS - 3;
             player = new Player(Math.floor(GRID_COLS / 2), startY);
             scrollY = player.y * CELL_HEIGHT - PLAYER_SCREEN_Y * CELL_HEIGHT;
         }
@@ -310,7 +304,6 @@
 
         function checkCollisions() {
             mice.forEach(mouse => {
-                // プレイヤーの論理座標とマウスの論理座標で衝突判定
                 if (mouse.x === player.x && mouse.y === player.y) {
                     gameOver = true;
                 }
