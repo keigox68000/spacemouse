@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>スペースマウス</title>
+    <title>SPACE MOUSE NIGHTMARE</title>
     <style>
         body {
             margin: 0;
@@ -24,6 +24,7 @@
             border: 2px solid #555;
             display: flex;
             align-items: center;
+            overflow: hidden; /* Canvas外の要素を隠す */
         }
         #oxygen-panel {
             width: 60px;
@@ -58,10 +59,25 @@
             flex-direction: column;
             gap: 20px;
         }
-        #ui-panel h2 {
-            margin: 0;
-            font-size: 32px;
+        #title-container {
+            position: relative;
             color: #00AAAA;
+        }
+        #title-main {
+            font-size: 32px;
+            font-weight: bold;
+        }
+        #title-sub {
+            position: absolute;
+            bottom: -10px;
+            right: 0;
+            font-size: 20px;
+            color: #FF0000;
+            font-weight: bold;
+            transform: rotate(-10deg);
+        }
+        #lives-display {
+             color: #55FFFF;
         }
     </style>
 </head>
@@ -74,27 +90,34 @@
         </div>
         <canvas id="gameCanvas"></canvas>
         <div id="ui-panel">
-            <h2>SPACE MOUSE</h2>
+            <div id="title-container">
+                <span id="title-main">SPACE MOUSE</span>
+                <span id="title-sub">NIGHTMARE</span>
+            </div>
             <p>SCORE: <span id="score">0</span></p>
-            <!-- ★UI変更：LEVELからFLOORへ -->
             <p>FLOOR: <span id="floor">1</span></p>
+            <p>MULTIPLIER: <span id="multiplier">x1.0</span></p>
+            <p>MAN: <span id="lives-display"></span></p>
         </div>
     </div>
+    <audio id="bgm" loop></audio>
 
     <script>
         // --- 初期設定 ---
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
         const scoreEl = document.getElementById('score');
-        // ★UI変更：levelElからfloorElへ
         const floorEl = document.getElementById('floor');
+        const multiplierEl = document.getElementById('multiplier');
+        const livesEl = document.getElementById('lives-display');
         const oxygenBarEl = document.getElementById('oxygen-bar');
+        const bgmEl = document.getElementById('bgm');
 
         // --- ゲーム定数 ---
         const GAME_AREA_WIDTH = 800 - 300 - 60;
         const GRID_COLS = 25;
         const GRID_ROWS_ON_SCREEN = 25;
-        const TOTAL_GRID_ROWS = 200;
+        const INITIAL_GRID_ROWS = 200;
         const CELL_WIDTH = GAME_AREA_WIDTH / GRID_COLS;
         const CELL_HEIGHT = 600 / GRID_ROWS_ON_SCREEN;
 
@@ -102,32 +125,33 @@
         canvas.height = 600;
 
         const COLORS = {
-            BG: '#000000', WALL: '#00AA00', PLAYER: '#55FFFF',
-            MOUSE: '#FF55FF', POWERUP: '#FFFF00', PLAYER_POWERED: '#FFFFFF'
+            BG: '#000000', PLAYER: '#55FFFF', MOUSE: '#FF55FF',
+            POWERUP: '#FFFF00', PLAYER_POWERED: '#FFFFFF',
+            WALL_GREEN: '#00AA00', WALL_CYAN: '#00AAAA', WALL_YELLOW: '#AAAA00', WALL_WHITE: '#CCCCCC',
+            GROUND_DOT: '#000000'
         };
+        const BUILDING_COLORS = [COLORS.WALL_GREEN, COLORS.WALL_CYAN, COLORS.WALL_YELLOW, COLORS.WALL_WHITE];
+        const PARTICLE_COLORS = ['#ff0000', '#ff7f00', '#ffff00', '#00ff00', '#0000ff', '#4b0082', '#8b00ff'];
 
-        const TILE_TYPE = { EMPTY: 0, WALL: 1, HOLE: 2, SIDE_WALL: 3 };
+        const TILE_TYPE = { EMPTY: 0, WALL: 1, HOLE: 2, SIDE_WALL: 3, GROUND: 4 };
         
         const PLAYER_SCREEN_Y = 18;
-        // ★ルール変更：OXYGENの最大値を100に
-        const MAX_OXYGEN = 100;
+        const MAX_OXYGEN = 50;
 
         // --- ゲーム変数 ---
         let grid = [];
-        let player;
-        let mice = [];
-        let powerUps = [];
-        let score = 0;
-        let level = 1; // 内部的な難易度レベルは維持
-        let gameOver = false;
-        let scrollY = 0;
-        let oxygen = MAX_OXYGEN;
+        let player, particles = [];
+        let mice = [], powerUps = [];
+        let score = 0, level = 1, multiplier = 1.0, lives = 3;
+        let scrollY = 0, oxygen = MAX_OXYGEN;
         let lastReplenishFloor = 0;
+        let startYReference;
+        let isMusicPlaying = false;
+        let gameState = 'title';
 
         const keys = { ArrowUp: false, ArrowLeft: false, ArrowRight: false };
 
-        let lastTime = 0;
-        let gameFrame = 0;
+        let lastTime = 0, gameFrame = 0;
         const FPS = 60;
         const frameInterval = 1000 / FPS;
 
@@ -140,10 +164,19 @@
                 lastReplenishFloor = this.y;
                 this.isPoweredUp = false;
                 this.powerUpTimer = 0;
+                this.isInvincible = false;
+                this.invincibilityTimer = 0;
             }
 
             draw() {
-                ctx.fillStyle = (this.isPoweredUp && gameFrame % 10 < 5) ? COLORS.PLAYER_POWERED : COLORS.PLAYER;
+                if (this.isInvincible && gameFrame % 10 < 5) return;
+                let color = this.isPoweredUp ? COLORS.PLAYER_POWERED : COLORS.PLAYER;
+                if(this.isPoweredUp && this.isInvincible && gameFrame % 10 < 5) {
+                    color = COLORS.PLAYER;
+                } else if (this.isPoweredUp) {
+                    color = COLORS.PLAYER_POWERED;
+                }
+                ctx.fillStyle = color;
                 const drawX = this.x * CELL_WIDTH + (CELL_WIDTH - this.width) / 2;
                 const drawY = PLAYER_SCREEN_Y * CELL_HEIGHT + (CELL_HEIGHT - this.height) / 2;
                 ctx.fillRect(drawX, drawY, this.width, this.height);
@@ -153,50 +186,91 @@
                 if (this.moveCooldown > 0 || dy > 0) return;
                 const nextX = this.x + dx;
                 const nextY = this.y + dy;
-                
                 if (nextX <= 0 || nextX >= GRID_COLS - 1 || nextY < 0) return;
+                if (!grid[nextY]) return;
+                const targetTile = grid[nextY][nextX];
 
-                if (!this.isPoweredUp && grid[nextY][nextX] === TILE_TYPE.WALL) return;
+                if (this.isPoweredUp) {
+                    if (dy < 0 && targetTile === TILE_TYPE.WALL) {
+                        grid[nextY][nextX] = TILE_TYPE.EMPTY;
+                        createParticles(this.x, PLAYER_SCREEN_Y - 1, PARTICLE_COLORS);
+                    } else if (dx !== 0 && (targetTile === TILE_TYPE.WALL || targetTile === TILE_TYPE.GROUND)) {
+                        return;
+                    }
+                } else {
+                    if (targetTile === TILE_TYPE.WALL || targetTile === TILE_TYPE.GROUND) {
+                        return;
+                    }
+                }
                 
                 const prevY = this.y;
-                this.x = nextX;
-                this.y = nextY;
-
-                // ★ルール変更：上に移動したらスコアを加算
+                this.x = nextX; this.y = nextY;
                 if (this.y < prevY) {
-                    score += this.isPoweredUp ? 15 : 5; // 1マスで5点、パワーアップ中は15点
+                    const baseScore = this.isPoweredUp ? 15 : 5;
+                    score += Math.floor(baseScore * multiplier);
                 }
-
                 if (this.y * CELL_HEIGHT < scrollY + (PLAYER_SCREEN_Y * CELL_HEIGHT)) {
                     scrollY -= CELL_HEIGHT;
                 }
-                
                 if (lastReplenishFloor - this.y >= 20) {
-                    oxygen = Math.min(MAX_OXYGEN, oxygen + 10);
+                    oxygen = Math.min(MAX_OXYGEN, oxygen + 5);
                     lastReplenishFloor -= 20;
                 }
-                
                 this.moveCooldown = 4;
             }
 
             update() {
+                if(this.invincibilityTimer > 0) {
+                    this.invincibilityTimer--;
+                    if(this.invincibilityTimer <= 0) this.isInvincible = false;
+                }
                 if (this.moveCooldown > 0) this.moveCooldown--;
                 if (this.isPoweredUp) {
                     this.powerUpTimer--;
                     if (this.powerUpTimer <= 0) this.isPoweredUp = false;
                 }
-                if (this.y <= 1) nextLevel();
+                if (this.y < GRID_ROWS_ON_SCREEN) {
+                    extendWorldUpwards();
+                }
             }
         }
 
-        class Mouse {
+        class Movable {
             constructor(x, y) {
                 this.x = x; this.y = y;
-                this.width = CELL_WIDTH * 0.9; this.height = CELL_HEIGHT * 0.9;
                 this.dx = Math.random() < 0.5 ? 1 : -1;
-                this.moveCooldown = 0; 
-                this.speed = Math.max(1, (8 - level) * (2/3));
-                this.touchedLeftWall = false; this.touchedRightWall = false;
+                this.moveCooldown = 0;
+                this.touchedLeftWall = false;
+                this.touchedRightWall = false;
+            }
+            updateMovement() {
+                const currentSpeed = this.speed / multiplier;
+                this.moveCooldown++;
+                if (this.moveCooldown < currentSpeed) return;
+                this.moveCooldown = 0;
+                let isFalling = false;
+                if (this.y % 2 === 0) { isFalling = true; } 
+                else {
+                    const floorBelowY = this.y + 1;
+                    if (floorBelowY < grid.length && grid[floorBelowY] && grid[floorBelowY][this.x] === TILE_TYPE.HOLE) {
+                        isFalling = true;
+                    }
+                }
+                if (isFalling) { this.y++; }
+                else {
+                    const nextX = this.x + this.dx;
+                    if (nextX <= 0) { this.touchedLeftWall = true; this.x = 1; this.dx = 1; } 
+                    else if (nextX >= GRID_COLS - 1) { this.touchedRightWall = true; this.x = GRID_COLS - 2; this.dx = -1; } 
+                    else { this.x = nextX; }
+                }
+            }
+        }
+
+        class Mouse extends Movable {
+            constructor(x, y) {
+                super(x, y);
+                this.width = CELL_WIDTH * 0.9; this.height = CELL_HEIGHT * 0.9;
+                this.speed = Math.max(1.5, (8 - level) * (4/3) * (2/3));
             }
             draw() {
                 const drawY = this.y * CELL_HEIGHT - scrollY;
@@ -206,47 +280,18 @@
                     ctx.fillRect(drawX, drawY + (CELL_HEIGHT - this.height) / 2, this.width, this.height);
                 }
             }
-            update() {
-                this.moveCooldown++;
-                if (this.moveCooldown < this.speed) return;
-                this.moveCooldown = 0;
-                let isFalling = false;
-                if (this.y % 2 === 0) {
-                    isFalling = true;
-                } else {
-                    const floorBelowY = this.y + 1;
-                    if (floorBelowY < TOTAL_GRID_ROWS && grid[floorBelowY] && grid[floorBelowY][this.x] === TILE_TYPE.HOLE) {
-                        isFalling = true;
-                    }
-                }
-                if (isFalling) {
-                    this.y++;
-                } else {
-                    const nextX = this.x + this.dx;
-                    if (nextX <= 0) {
-                        this.touchedLeftWall = true; this.x = 1; this.dx = 1;
-                    } else if (nextX >= GRID_COLS - 1) {
-                        this.touchedRightWall = true; this.x = GRID_COLS - 2; this.dx = -1;
-                    } else {
-                        this.x = nextX;
-                    }
-                }
-            }
+            update() { this.updateMovement(); }
         }
         
-        class PowerUp {
+        class PowerUp extends Movable {
             constructor(x, y) {
-                this.x = x; this.y = y;
+                super(x, y);
                 this.radius = CELL_WIDTH / 2 * 0.8;
-                this.dx = Math.random() < 0.5 ? 1 : -1;
-                this.moveCooldown = 0;
-                this.speed = Math.max(1, (8 - level) * (2/3));
+                this.speed = Math.max(1.5, (8 - level) * (4/3) * (2/3));
             }
-
             draw() {
                 const drawX = this.x * CELL_WIDTH + CELL_WIDTH / 2;
                 const drawY = this.y * CELL_HEIGHT - scrollY + CELL_HEIGHT / 2;
-                
                 if (drawY > -CELL_HEIGHT && drawY < canvas.height) {
                     ctx.fillStyle = COLORS.POWERUP;
                     ctx.beginPath();
@@ -254,38 +299,101 @@
                     ctx.fill();
                 }
             }
-            
-            update() {
-                this.moveCooldown++;
-                if (this.moveCooldown < this.speed) return;
-                this.moveCooldown = 0;
-                let isFalling = false;
-                if (this.y % 2 === 0) {
-                    isFalling = true;
-                } else {
-                    const floorBelowY = this.y + 1;
-                    if (floorBelowY < TOTAL_GRID_ROWS && grid[floorBelowY] && grid[floorBelowY][this.x] === TILE_TYPE.HOLE) {
-                        isFalling = true;
+            update() { this.updateMovement(); }
+        }
+
+        class Particle {
+            constructor(x, y, colors) {
+                this.x = x; this.y = y;
+                this.size = Math.random() * 2 + 1;
+                this.speedX = Math.random() * 4 - 2;
+                this.speedY = Math.random() * 4 - 2;
+                this.color = colors[Math.floor(Math.random() * colors.length)];
+                this.life = 50;
+            }
+            update() { this.x += this.speedX; this.y += this.speedY; this.life--; }
+            draw() {
+                ctx.globalAlpha = this.life / 50;
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.globalAlpha = 1;
+            }
+        }
+        
+        function createParticles(gridX, gridY, colors) {
+            const pixelX = gridX * CELL_WIDTH + CELL_WIDTH / 2;
+            const pixelY = PLAYER_SCREEN_Y * CELL_HEIGHT + CELL_HEIGHT / 2;
+            for (let i = 0; i < 35; i++) {
+                particles.push(new Particle(pixelX, pixelY, colors));
+            }
+        }
+
+        // --- ゲームロジック ---
+        function generateBuildingRows(startRow, endRow) {
+            const groundStartRow = INITIAL_GRID_ROWS - 10;
+            for (let y = startRow; y < endRow; y++) {
+                if (!grid[y]) grid[y] = [];
+                if (y >= groundStartRow) {
+                    for (let x = 0; x < GRID_COLS; x++) {
+                        if (x === 0 || x === GRID_COLS - 1) grid[y][x] = TILE_TYPE.SIDE_WALL;
+                        else grid[y][x] = TILE_TYPE.GROUND;
                     }
-                }
-                if (isFalling) {
-                    this.y++;
                 } else {
-                    const nextX = this.x + this.dx;
-                    if (nextX <= 0) {
-                        this.x = 1; this.dx = 1;
-                    } else if (nextX >= GRID_COLS - 1) {
-                        this.x = GRID_COLS - 2; this.dx = -1;
-                    } else {
-                        this.x = nextX;
+                    for (let x = 0; x < GRID_COLS; x++) {
+                        if (x === 0 || x === GRID_COLS - 1) { grid[y][x] = TILE_TYPE.SIDE_WALL; } 
+                        else if (y % 2 !== 0) { grid[y][x] = TILE_TYPE.EMPTY; } 
+                        else { grid[y][x] = TILE_TYPE.WALL; }
+                    }
+                    if (y % 2 === 0) {
+                        const holeCount = 1 + Math.floor(Math.random() * 4);
+                        for (let i = 0; i < holeCount; i++) {
+                            const holeX = 1 + Math.floor(Math.random() * (GRID_COLS - 2));
+                            grid[y][holeX] = TILE_TYPE.HOLE;
+                        }
                     }
                 }
             }
         }
 
-        // --- ゲームロジック ---
-        function generateBuilding() { /* (変更なし) */ }
-        function createPlayer() { /* (変更なし) */ }
+        function extendWorldUpwards() {
+            const rowsToAdd = 100;
+            const currentTopRow = grid.length;
+            const newGridPart = [];
+            for (let y = 0; y < rowsToAdd; y++) {
+                newGridPart[y] = [];
+                for (let x = 0; x < GRID_COLS; x++) {
+                    if (x === 0 || x === GRID_COLS - 1) {
+                        newGridPart[y][x] = TILE_TYPE.SIDE_WALL;
+                    } else if (y % 2 !== 0) {
+                        newGridPart[y][x] = TILE_TYPE.EMPTY;
+                    } else {
+                        newGridPart[y][x] = TILE_TYPE.WALL;
+                    }
+                }
+                if (y % 2 === 0) {
+                    const holeCount = 1 + Math.floor(Math.random() * 4);
+                    for (let i = 0; i < holeCount; i++) {
+                        const holeX = 1 + Math.floor(Math.random() * (GRID_COLS - 2));
+                        newGridPart[y][holeX] = TILE_TYPE.HOLE;
+                    }
+                }
+            }
+            grid.unshift(...newGridPart);
+            player.y += rowsToAdd;
+            mice.forEach(m => m.y += rowsToAdd);
+            powerUps.forEach(p => p.y += rowsToAdd);
+            scrollY += rowsToAdd * CELL_HEIGHT;
+            lastReplenishFloor += rowsToAdd;
+            startYReference += rowsToAdd;
+        }
+
+        function respawnPlayer(respawnX, respawnY) {
+            player = new Player(respawnX, respawnY);
+            player.isInvincible = true;
+            player.invincibilityTimer = 2 * FPS;
+        }
 
         function spawnEntity() {
              const spawnChance = 0.02 + level * 0.005; 
@@ -293,7 +401,7 @@
                 const topRow = Math.max(0, Math.floor(scrollY / CELL_HEIGHT));
                 let spawnY = topRow;
                 if(spawnY % 2 === 0) spawnY++;
-                if (spawnY >= TOTAL_GRID_ROWS) return;
+                if (spawnY >= grid.length) return;
                 let spawnX;
                 let attempts = 0;
                 do {
@@ -311,13 +419,18 @@
             }
         }
         
-        function handleInput() { /* (変更なし) */ }
+        function handleInput() { 
+            if (gameState !== 'playing') return;
+            if (keys.ArrowUp) player.move(0, -1);
+            if (keys.ArrowLeft) player.move(-1, 0);
+            if (keys.ArrowRight) player.move(1, 0);
+        }
 
         function update() {
-            if (gameOver) return;
+            if (gameState !== 'playing') return;
             
             oxygen -= 1 / FPS;
-            if (oxygen <= 0) { oxygen = 0; gameOver = true; }
+            if (oxygen <= 0) handlePlayerHit();
 
             handleInput();
             player.update();
@@ -326,9 +439,8 @@
             for (let i = mice.length - 1; i >= 0; i--) {
                 const mouse = mice[i];
                 mouse.update();
-                const isStuckAtBottom = mouse.y >= TOTAL_GRID_ROWS - 1;
+                const isStuckAtBottom = mouse.y >= grid.length - 1;
                 const isOffScreen = mouse.y * CELL_HEIGHT - scrollY > canvas.height;
-                // ★ルール変更：マウスが消えてもスコアは増えない
                 if ((isStuckAtBottom && mouse.touchedLeftWall && mouse.touchedRightWall) || isOffScreen) {
                     mice.splice(i, 1);
                 }
@@ -337,68 +449,177 @@
             for (let i = powerUps.length - 1; i >= 0; i--) {
                 const item = powerUps[i];
                 item.update();
+                const isStuckAtBottom = item.y >= grid.length - 1;
                 const isOffScreen = item.y * CELL_HEIGHT - scrollY > canvas.height;
-                if (isOffScreen) {
+                if ((isStuckAtBottom && item.touchedLeftWall && item.touchedRightWall) || isOffScreen) {
                     powerUps.splice(i, 1);
                 }
             }
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                if (particles[i].life <= 0) particles.splice(i, 1);
+            }
             
             checkCollisions();
-            updateUI();
         }
 
+        function handlePlayerHit() {
+            if (player.isInvincible) return;
+            lives--;
+            const lastPlayerX = player.x;
+            const lastPlayerY = player.y;
+            createParticles(lastPlayerX, PLAYER_SCREEN_Y, [COLORS.PLAYER, COLORS.PLAYER_POWERED, '#FFFFFF']);
+            
+            if (lives < 0) {
+                gameState = 'gameOver';
+                bgmEl.pause();
+                bgmEl.currentTime = 0;
+                setTimeout(() => {
+                    resetGame();
+                }, 3000);
+            } else {
+                oxygen = MAX_OXYGEN;
+                mice = [];
+                powerUps = [];
+                respawnPlayer(lastPlayerX, lastPlayerY);
+            }
+        }
+        
         function checkCollisions() {
+            if (player.isInvincible) return;
+            
+            let hit = false;
             mice.forEach(mouse => {
-                if (mouse.x === player.x && mouse.y === player.y) {
-                    gameOver = true;
-                }
+                if (mouse.x === player.x && mouse.y === player.y) hit = true;
             });
+
+            if(hit) {
+                handlePlayerHit();
+                return;
+            }
 
             for (let i = powerUps.length - 1; i >= 0; i--) {
                 const item = powerUps[i];
                 if (item.x === player.x && item.y === player.y) {
                     player.isPoweredUp = true;
                     player.powerUpTimer = 3 * FPS;
+                    score += Math.floor(50 * multiplier);
                     powerUps.splice(i, 1);
                 }
             }
         }
 
         function updateUI() {
+            if (gameState === 'title') {
+                 livesEl.textContent = '■ '.repeat(2);
+                 floorEl.textContent = 1;
+                 scoreEl.textContent = 0;
+                 multiplierEl.textContent = 'x1.0';
+                 oxygenBarEl.style.height = `100%`;
+                 return;
+            };
             scoreEl.textContent = score;
-            // ★UI変更：現在の階数を計算して表示
-            const currentFloor = Math.floor(((TOTAL_GRID_ROWS - 1) - player.y) / 2) + 1;
+            const currentFloor = Math.floor((startYReference - player.y) / 2) + 1;
             floorEl.textContent = currentFloor;
+            multiplier = 1.0 + Math.floor(currentFloor / 10) * 0.1;
+            multiplierEl.textContent = `x${multiplier.toFixed(1)}`;
             const oxygenPercent = (oxygen / MAX_OXYGEN) * 100;
             oxygenBarEl.style.height = `${oxygenPercent}%`;
+            livesEl.textContent = '■ '.repeat(Math.max(0, lives - 1));
         }
+        
+        function drawBuilding() {
+            const startRow = Math.max(0, Math.floor(scrollY / CELL_HEIGHT));
+            const endRow = startRow + GRID_ROWS_ON_SCREEN + 2;
+            
+            if (endRow > grid.length) {
+                extendWorldUpwards();
+            }
 
-        function nextLevel() {
-            level++;
-            // scoreは引き継ぐ
-            oxygen = MAX_OXYGEN;
-            mice = []; powerUps = [];
-            generateBuilding();
-            createPlayer();
+            for (let y = startRow; y < endRow; y++) {
+                if (!grid[y]) continue;
+
+                const drawY = y * CELL_HEIGHT - scrollY;
+
+                const floorOfThisRow = Math.floor((startYReference - y) / 2) + 1;
+                const colorIndex = Math.floor(Math.max(0, floorOfThisRow - 1) / 50) % BUILDING_COLORS.length;
+                let currentFillStyle = BUILDING_COLORS[colorIndex];
+                
+                if (y >= INITIAL_GRID_ROWS - 10) {
+                    currentFillStyle = COLORS.WALL_GREEN;
+                }
+                ctx.fillStyle = currentFillStyle;
+                
+                for (let x = 0; x < GRID_COLS; x++) {
+                    if (grid[y][x] === TILE_TYPE.WALL || grid[y][x] === TILE_TYPE.SIDE_WALL) {
+                        ctx.fillRect(x * CELL_WIDTH, drawY, CELL_WIDTH + 1, CELL_HEIGHT);
+                    } 
+                    else if (grid[y][x] === TILE_TYPE.GROUND) {
+                         ctx.fillRect(x * CELL_WIDTH, drawY, CELL_WIDTH + 1, CELL_HEIGHT);
+                         ctx.fillStyle = COLORS.GROUND_DOT;
+                         const dotSize = 2;
+                         for (let dx = 0; dx < CELL_WIDTH; dx += 6) {
+                            for (let dy = 0; dy < CELL_HEIGHT; dy += 6) {
+                                ctx.fillRect(x * CELL_WIDTH + dx, drawY + dy, dotSize, dotSize);
+                            }
+                         }
+                         ctx.fillStyle = currentFillStyle;
+                    }
+                }
+            }
+         }
+
+        function drawTitleScreen() {
+            ctx.fillStyle = 'white';
+            ctx.font = '40px "MS Gothic", "Osaka-mono", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('HIT ANY KEY', canvas.width / 2, canvas.height / 2);
         }
-
-        // --- 描画ロジック ---
-        function drawBuilding() { /* (変更なし) */ }
-        function drawGameOver() { /* (変更なし) */ }
+        function drawGameOver() {
+            ctx.fillStyle = 'red';
+            ctx.font = '50px "MS Gothic", "Osaka-mono", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2);
+         }
 
         function draw() {
             ctx.fillStyle = COLORS.BG;
             ctx.fillRect(0, 0, canvas.width, canvas.height);
-            drawBuilding();
-            powerUps.forEach(item => item.draw());
-            mice.forEach(mouse => mouse.draw());
-            player.draw();
-            if (gameOver) drawGameOver();
+            
+            if (gameState === 'title' || gameState === 'gameOver') {
+                 drawBuilding();
+            }
+
+            if (gameState === 'title') {
+                drawTitleScreen();
+            } else if (gameState === 'gameOver') {
+                drawGameOver();
+            } else {
+                drawBuilding();
+                powerUps.forEach(item => item.draw());
+                mice.forEach(mouse => mouse.draw());
+                particles.forEach(p => p.draw());
+                if (player) player.draw();
+            }
         }
 
         // --- イベントリスナー ---
-        window.addEventListener('keydown', (e) => { /* (変更なし) */ });
-        window.addEventListener('keyup', (e) => { /* (変更なし) */ });
+        window.addEventListener('keydown', (e) => {
+            if (gameState === 'title' && !keys[e.key]) {
+                gameState = 'playing';
+                if (!isMusicPlaying || bgmEl.paused) {
+                    bgmEl.src = 'https://raw.githubusercontent.com/keigox68000/spacemouse/main/SM03B.mp3';
+                    bgmEl.volume = 0.1;
+                    bgmEl.play().catch(error => console.error("BGM Error:", error));
+                    isMusicPlaying = true;
+                }
+            }
+            if (keys.hasOwnProperty(e.key)) { e.preventDefault(); keys[e.key] = true; }
+        });
+        window.addEventListener('keyup', (e) => {
+            if (keys.hasOwnProperty(e.key)) { e.preventDefault(); keys[e.key] = false; }
+        });
 
         // --- ゲームループ ---
         function gameLoop(currentTime) {
@@ -407,23 +628,35 @@
             if (deltaTime < frameInterval) return;
             lastTime = currentTime - (deltaTime % frameInterval);
             gameFrame++;
-            update();
+            
+            if(gameState === 'playing') update();
             draw();
+            updateUI();
         }
 
-        // --- ゲーム開始 ---
-        function init() {
-            // 関数のプロトタイプへの追加
-            generateBuilding = function() { grid = []; for (let y = 0; y < TOTAL_GRID_ROWS; y++) { grid[y] = []; for (let x = 0; x < GRID_COLS; x++) { if (x === 0 || x === GRID_COLS - 1) { grid[y][x] = TILE_TYPE.SIDE_WALL; } else if (y % 2 !== 0) { grid[y][x] = TILE_TYPE.EMPTY; } else { grid[y][x] = TILE_TYPE.WALL; } } if (y % 2 === 0 && y > 0) { const holeCount = 1 + Math.floor(Math.random() * 4); for (let i = 0; i < holeCount; i++) { const holeX = 1 + Math.floor(Math.random() * (GRID_COLS - 2)); grid[y][holeX] = TILE_TYPE.HOLE; } } } };
-            createPlayer = function() { const startY = TOTAL_GRID_ROWS - 3; player = new Player(Math.floor(GRID_COLS / 2), startY); scrollY = player.y * CELL_HEIGHT - PLAYER_SCREEN_Y * CELL_HEIGHT; };
-            handleInput = function() { if (gameOver) return; if (keys.ArrowUp) player.move(0, -1); if (keys.ArrowLeft) player.move(-1, 0); if (keys.ArrowRight) player.move(1, 0); };
-            drawBuilding = function() { const startRow = Math.floor(scrollY / CELL_HEIGHT); const endRow = Math.min(TOTAL_GRID_ROWS - 1, startRow + GRID_ROWS_ON_SCREEN + 1); ctx.fillStyle = COLORS.WALL; for (let y = startRow; y <= endRow; y++) { const drawY = y * CELL_HEIGHT - scrollY; for (let x = 0; x < GRID_COLS; x++) { if (grid[y] && (grid[y][x] === TILE_TYPE.WALL || grid[y][x] === TILE_TYPE.SIDE_WALL)) { ctx.fillRect(x * CELL_WIDTH, drawY, CELL_WIDTH + 1, CELL_HEIGHT); } } } };
-            drawGameOver = function() { ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = 'red'; ctx.font = '50px "MS Gothic", "Osaka-mono", monospace'; ctx.textAlign = 'center'; ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 20); ctx.fillStyle = 'white'; ctx.font = '20px "MS Gothic", "Osaka-mono", monospace'; ctx.fillText('Press F5 to Restart', canvas.width / 2, canvas.height / 2 + 30); };
-            window.addEventListener('keydown', (e) => { if (keys.hasOwnProperty(e.key)) { e.preventDefault(); keys[e.key] = true; } });
-            window.addEventListener('keyup', (e) => { if (keys.hasOwnProperty(e.key)) { e.preventDefault(); keys[e.key] = false; } });
+        function resetGame() {
+            score = 0;
+            level = 1;
+            multiplier = 1.0;
+            lives = 3;
+            oxygen = MAX_OXYGEN;
+            grid = [];
+            mice = [];
+            powerUps = [];
+            particles = [];
             
-            generateBuilding();
-            createPlayer();
+            generateBuildingRows(0, INITIAL_GRID_ROWS);
+            startYReference = INITIAL_GRID_ROWS - 11;
+            const startX = Math.floor(GRID_COLS / 2);
+            player = new Player(startX, startYReference);
+            scrollY = player.y * CELL_HEIGHT - PLAYER_SCREEN_Y * CELL_HEIGHT;
+            
+            isMusicPlaying = false;
+            gameState = 'title';
+        }
+
+        function init() {
+            resetGame();
             gameLoop(0);
         }
 
